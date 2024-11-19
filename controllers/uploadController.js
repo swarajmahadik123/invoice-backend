@@ -9,9 +9,9 @@ import { GoogleAIFileManager } from "@google/generative-ai/server";
 const __dirname = "D:\Swipe\invoice-backend";
 
 // Initialize Gemini AI
-const genAI = new GoogleGenerativeAI("AIzaSyDfdAMc1syx-vI6q9CYBxmPw2u-FD6nolc");
+const genAI = new GoogleGenerativeAI("YOUR_GEMINI_API_KEY");
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-const fileManager = new GoogleAIFileManager("AIzaSyDfdAMc1syx-vI6q9CYBxmPw2u-FD6nolc");
+const fileManager = new GoogleAIFileManager("YOUR_GEMINI_API_KEY");
 
 // Enhanced multer storage configuration
 const storage = multer.diskStorage({
@@ -80,7 +80,6 @@ function extractExcelData(filePath) {
     const jsonData = xlsx.utils.sheet_to_json(worksheet);
 
     return jsonData;
-
   } catch (error) {
     console.error('Error extracting Excel data:', error);
     throw new Error(`Failed to extract data from Excel: ${error.message}`);
@@ -89,92 +88,62 @@ function extractExcelData(filePath) {
 
 // Improved file processing function with robust error handling
 async function processFiles(files) {
-  const extractedTexts = [];
+  const processedData = {
+    invoices: [],
+    products: [],
+    customers: [],
+    rawData: []
+  };
   const processingErrors = [];
 
   for (const file of files) {
     try {
-      // Check if it's an Excel file
       const fileExtension = path.extname(file.originalname).toLowerCase();
       
-      let extractedData;
       if (fileExtension === '.xlsx') {
         // Extract data directly from Excel
         const excelJson = extractExcelData(file.path);
+        processedData.rawData.push({
+          filename: file.originalname,
+          data: excelJson
+        });
 
-        // Send Excel JSON data to Gemini for structured extraction
         try {
           const result = await model.generateContent([
-            { text: "Please analyze this Excel JSON data and extract information into three structured tables. The files may contain invoices, product information, and customer details. only give json do not give extra text. Format the response as JSON with the following structure:" +
-            JSON.stringify({
-              invoices: [
-                {
-                  serialNumber: "string",
-                  customerName: "string",
-                  productName: "string",
-                  quantity: "number",
-                  tax: "number",
-                  totalAmount: "number",
-                  date: "string"
-                }
-              ],
-              products: [
-                {
-                  name: "string",
-                  quantity: "number",
-                  unitPrice: "number",
-                  tax: "number",
-                  priceWithTax: "number",
-                  discount: "number (optional)"
-                }
-              ],
-              customers: [
-                {
-                  customerName: "string",
-                  phoneNumber: "string",
-                  totalPurchaseAmount: "number",
-                  email: "string (optional)",
-                  address: "string (optional)"
-                }
-              ]
-            }, null, 2)
+            { 
+              text: "Please analyze this Excel JSON data and extract information into three structured tables. The files may contain invoices, product information, and customer details. Return a JSON with invoices, products, and customers." 
             },
-            { text: JSON.stringify(excelJson, null, 2) }
+            { 
+              text: JSON.stringify(excelJson, null, 2) 
+            }
           ]);
 
-          // Parse Gemini's response
           const cleanedText = result.response.candidates[0].content.parts[0].text
             .replace(/```json/g, '')
             .replace(/```/g, '')
             .trim();
           
           const structuredData = JSON.parse(cleanedText);
-         console.log(cleanedText)
-          // Combine original data with structured data
-          extractedData = {
-            originalData: excelJson,
-            structuredData: structuredData
-          };
+
+          // Merge extracted data
+          if (structuredData.invoices) processedData.invoices.push(...structuredData.invoices);
+          if (structuredData.products) processedData.products.push(...structuredData.products);
+          if (structuredData.customers) processedData.customers.push(...structuredData.customers);
+
         } catch (geminiError) {
           console.error('Gemini analysis error for Excel file:', geminiError);
-          // If Gemini analysis fails, keep original extracted data
-          extractedData = {
-            originalData: excelJson,
-            geminiAnalysisError: geminiError.message
-          };
+          processingErrors.push({
+            filename: file.originalname,
+            errorMessage: geminiError.message
+          });
         }
       } else {
-        // Existing code for non-Excel files remains the same
+        // Process non-Excel files
         const uploadResponse = await fileManager.uploadFile(file.path, {
           mimeType: file.mimetype,
           displayName: file.originalname,
         });
 
-        console.log(
-          `Uploaded file ${uploadResponse.file.displayName} as: ${uploadResponse.file.uri}`,
-        );
-        
-        // Generate content using the uploaded file
         const result = await model.generateContent([
           {
             fileData: {
@@ -183,64 +152,22 @@ async function processFiles(files) {
             },
           },
           { 
-            text: "Please analyze these files and extract information into three structured tables. The files may contain invoices, product information, and customer details. only give json do not give extra text. Format the response as JSON with the following structure:" +
-            JSON.stringify({
-              invoices: [
-                {
-                  serialNumber: "string",
-                  customerName: "string",
-                  productName: "string",
-                  quantity: "number",
-                  tax: "number",
-                  totalAmount: "number",
-                  date: "string"
-                }
-              ],
-              products: [
-                {
-                  name: "string",
-                  quantity: "number",
-                  unitPrice: "number",
-                  tax: "number",
-                  priceWithTax: "number",
-                  discount: "number (optional)"
-                }
-              ],
-              customers: [
-                {
-                  customerName: "string",
-                  phoneNumber: "string",
-                  totalPurchaseAmount: "number",
-                  email: "string (optional)",
-                  address: "string (optional)"
-                }
-              ]
-            }, null, 2)
+            text: "Please analyze these files and extract information into three structured tables. Return a JSON with invoices, products, and customers." 
           },
         ]);
 
-        // Attempt to parse the extracted text as JSON
-        let parsedText;
-        try {
-          // Remove any potential code block markers and trim
-          const cleanedText = result.response.candidates[0].content.parts[0].text
-            .replace(/```json/g, '')
-            .replace(/```/g, '')
-            .trim();
-          
-          parsedText = JSON.parse(cleanedText);
-          console.log(parsedText)
-        } catch (parseError) {
-          throw new Error(`Failed to parse JSON: ${parseError.message}`);
-        }
+        const cleanedText = result.response.candidates[0].content.parts[0].text
+          .replace(/```json/g, '')
+          .replace(/```/g, '')
+          .trim();
+        
+        const structuredData = JSON.parse(cleanedText);
 
-        extractedData = parsedText;
+        // Merge extracted data
+        if (structuredData.invoices) processedData.invoices.push(...structuredData.invoices);
+        if (structuredData.products) processedData.products.push(...structuredData.products);
+        if (structuredData.customers) processedData.customers.push(...structuredData.customers);
       }
-
-      extractedTexts.push({
-        filename: file.originalname,
-        extractedData: extractedData
-      });
 
     } catch (error) {
       console.error(`Error processing file ${file.originalname}:`, error);
@@ -251,7 +178,10 @@ async function processFiles(files) {
     }
   }
  
-  return { extractedTexts, processingErrors };
+  return { 
+    processedData, 
+    processingErrors 
+  };
 }
 
 // Upload files handler
@@ -266,7 +196,7 @@ export const uploadFiles = async (req, res) => {
     }
 
     // Process files with comprehensive error handling
-    const { extractedTexts, processingErrors } = await processFiles(req.files);
+    const { processedData, processingErrors } = await processFiles(req.files);
 
     // Async file cleanup
     const cleanupPromises = req.files.map(async (file) => {
@@ -280,10 +210,15 @@ export const uploadFiles = async (req, res) => {
     // Wait for all cleanup operations
     await Promise.all(cleanupPromises);
 
-    // Prepare response
+    // Prepare response for frontend
     const response = {
       success: true,
-      data: extractedTexts,
+      data: {
+        invoices: processedData.invoices,
+        products: processedData.products,
+        customers: processedData.customers,
+        rawData: processedData.rawData
+      },
       filesProcessed: req.files.length
     };
 
